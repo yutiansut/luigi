@@ -34,10 +34,12 @@ import re
 import copy
 import functools
 
+import luigi
 from luigi import six
 
 from luigi import parameter
 from luigi.task_register import Register
+from luigi.parameter import ParameterVisibility
 
 Parameter = parameter.Parameter
 logger = logging.getLogger('luigi-interface')
@@ -107,7 +109,7 @@ def auto_namespace(scope=''):
         luigi.auto_namespace(scope=__name__)
 
     To reset an ``auto_namespace()`` call, you can use
-    ``namespace(scope='my_scope'``).  But this will not be
+    ``namespace(scope='my_scope')``.  But this will not be
     needed (and is also discouraged) if you use the ``scope`` kwarg.
 
     *New since Luigi 2.6.0.*
@@ -186,8 +188,7 @@ class Task(object):
 
     #: Number of seconds after which to time out the run function.
     #: No timeout if set to 0.
-    #: Defaults to 0 or worker-timeout value in config file
-    #: Only works when using multiple workers.
+    #: Defaults to 0 or worker-timeout value in config
     worker_timeout = None
 
     #: Maximum number of tasks to run together as a batch. Infinite by default
@@ -277,6 +278,14 @@ class Task(object):
                     return
                 except BaseException:
                     logger.exception("Error in event callback for %r", event)
+
+    @property
+    def accepts_messages(self):
+        """
+        For configuring which scheduler messages can be received. When falsy, this tasks does not
+        accept any message. When True, all messages are accepted.
+        """
+        return False
 
     @property
     def task_module(self):
@@ -428,17 +437,21 @@ class Task(object):
         for key, value in param_values:
             setattr(self, key, value)
 
-        # Register args and kwargs as an attribute on the class. Might be useful
-        self.param_args = tuple(value for key, value in param_values)
+        # Register kwargs as an attribute on the class. Might be useful
         self.param_kwargs = dict(param_values)
 
         self._warn_on_wrong_param_types()
-        self.task_id = task_id_str(self.get_task_family(), self.to_str_params(only_significant=True))
+        self.task_id = task_id_str(self.get_task_family(), self.to_str_params(only_significant=True, only_public=True))
         self.__hash = hash(self.task_id)
 
         self.set_tracking_url = None
         self.set_status_message = None
         self.set_progress_percentage = None
+
+    @property
+    def param_args(self):
+        warnings.warn("Use of param_args has been deprecated.", DeprecationWarning)
+        return tuple(self.param_kwargs[k] for k, v in self.get_params())
 
     def initialized(self):
         """
@@ -469,17 +482,28 @@ class Task(object):
 
         return cls(**kwargs)
 
-    def to_str_params(self, only_significant=False):
+    def to_str_params(self, only_significant=False, only_public=False):
         """
         Convert all parameters to a str->str hash.
         """
         params_str = {}
         params = dict(self.get_params())
         for param_name, param_value in six.iteritems(self.param_kwargs):
-            if (not only_significant) or params[param_name].significant:
+            if (((not only_significant) or params[param_name].significant)
+                    and ((not only_public) or params[param_name].visibility == ParameterVisibility.PUBLIC)
+                    and params[param_name].visibility != ParameterVisibility.PRIVATE):
                 params_str[param_name] = params[param_name].serialize(param_value)
 
         return params_str
+
+    def _get_param_visibilities(self):
+        param_visibilities = {}
+        params = dict(self.get_params())
+        for param_name, param_value in six.iteritems(self.param_kwargs):
+            if params[param_name].visibility != ParameterVisibility.PRIVATE:
+                param_visibilities[param_name] = params[param_name].visibility.serialize()
+
+        return param_visibilities
 
     def clone(self, cls=None, **kwargs):
         """
@@ -528,7 +552,7 @@ class Task(object):
         return task_str
 
     def __eq__(self, other):
-        return self.__class__ == other.__class__ and self.param_args == other.param_args
+        return self.__class__ == other.__class__ and self.task_id == other.task_id
 
     def complete(self):
         """
@@ -581,7 +605,7 @@ class Task(object):
 
         A Task will only run if all of the Tasks that it requires are completed.
         If your Task does not require any other Tasks, then you don't need to
-        override this method. Otherwise, a Subclasses can override this method
+        override this method. Otherwise, a subclass can override this method
         to return a single Task, a list of Task instances, or a dict whose
         values are Task instances.
 
@@ -682,7 +706,7 @@ class Task(object):
                         pickle.dumps(self)
 
         """
-        unpicklable_properties = ('set_tracking_url', 'set_status_message', 'set_progress_percentage')
+        unpicklable_properties = tuple(luigi.worker.TaskProcess.forward_reporter_attributes.values())
         reserved_properties = {}
         for property_name in unpicklable_properties:
             if hasattr(self, property_name):

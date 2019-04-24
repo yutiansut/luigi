@@ -25,14 +25,17 @@ import luigi.contrib.hive
 import mock
 from luigi import LocalTarget
 
+from nose.plugins.attrib import attr
 
+
+@attr('apache')
 class HiveTest(unittest.TestCase):
     count = 0
 
     def mock_hive_cmd(self, args, check_return=True):
         self.last_hive_cmd = args
         self.count += 1
-        return "statement{0}".format(self.count)
+        return six.u("statement{0}".format(self.count))
 
     def setUp(self):
         self.run_hive_cmd_saved = luigi.contrib.hive.run_hive
@@ -72,6 +75,7 @@ class HiveTest(unittest.TestCase):
         self.assertTrue(os.path.exists(dirname))
 
 
+@attr('apache')
 class HiveCommandClientTest(unittest.TestCase):
 
     """Note that some of these tests are really for the CDH releases of Hive, to which I do not currently have access.
@@ -262,7 +266,7 @@ class HiveCommandClientTest(unittest.TestCase):
         # I'm testing this again to check the return codes
         # I didn't want to tear up all the existing tests to change how run_hive is mocked
         comm = mock.Mock(name='communicate_mock')
-        comm.return_value = "some return stuff", ""
+        comm.return_value = six.b("some return stuff"), ""
 
         preturn = mock.Mock(name='open_mock')
         preturn.returncode = 0
@@ -275,7 +279,7 @@ class HiveCommandClientTest(unittest.TestCase):
         preturn.returncode = 17
         self.assertRaises(luigi.contrib.hive.HiveCommandError, luigi.contrib.hive.run_hive, ["blah", "blah"])
 
-        comm.return_value = "", "some stderr stuff"
+        comm.return_value = six.b(""), "some stderr stuff"
         returned = luigi.contrib.hive.run_hive(["blah", "blah"], False)
         self.assertEqual("", returned)
 
@@ -287,6 +291,7 @@ class MyHiveTask(luigi.contrib.hive.HiveQueryTask):
         return 'banana banana %s' % self.param
 
 
+@attr('apache')
 class TestHiveTask(unittest.TestCase):
     task_class = MyHiveTask
 
@@ -329,6 +334,7 @@ class TestHiveTaskArgs(TestHiveTask):
             self.assertEqual(arglist[idx - 1], '--hiveconf')
 
 
+@attr('apache')
 class TestHiveTarget(unittest.TestCase):
 
     def test_hive_table_target(self):

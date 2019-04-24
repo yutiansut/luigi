@@ -1823,7 +1823,7 @@ class KeyboardInterruptBehaviorTest(LuigiTestCase):
 
 class WorkerPurgeEventHandlerTest(unittest.TestCase):
 
-    @mock.patch('luigi.worker.TaskProcess')
+    @mock.patch('luigi.worker.ContextManagedTaskProcess')
     def test_process_killed_handler(self, task_proc):
         result = []
 
@@ -1853,6 +1853,26 @@ class WorkerPurgeEventHandlerTest(unittest.TestCase):
             result.append(t)
 
         w = Worker(worker_processes=2, wait_interval=0.01, timeout=5)
+        mock_time.time.return_value = 0
+        task = HangTheWorkerTask(worker_timeout=1)
+        w.add(task)
+        w._run_task(task.task_id)
+
+        mock_time.time.return_value = 3
+        w._handle_next_task()
+
+        self.assertEqual(result, [task])
+
+    @mock.patch('luigi.worker.time')
+    def test_timeout_handler_single_worker(self, mock_time):
+        result = []
+
+        @HangTheWorkerTask.event_handler(Event.TIMEOUT)
+        def store_task(t, error_msg):
+            self.assertTrue(error_msg)
+            result.append(t)
+
+        w = Worker(wait_interval=0.01, timeout=5)
         mock_time.time.return_value = 0
         task = HangTheWorkerTask(worker_timeout=1)
         w.add(task)

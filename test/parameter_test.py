@@ -16,9 +16,11 @@
 #
 
 import datetime
+
 from helpers import with_config, LuigiTestCase, parsing, in_parse, RunOnceTask
 from datetime import timedelta
 import enum
+import mock
 
 import luigi
 import luigi.date_interval
@@ -44,6 +46,10 @@ class WithDefaultTrue(luigi.Task):
     x = luigi.BoolParameter(default=True)
 
 
+class WithDefaultFalse(luigi.Task):
+    x = luigi.BoolParameter(default=False)
+
+
 class Foo(luigi.Task):
     bar = luigi.Parameter()
     p2 = luigi.IntParameter()
@@ -52,9 +58,13 @@ class Foo(luigi.Task):
 
 class Baz(luigi.Task):
     bool = luigi.BoolParameter()
+    bool_true = luigi.BoolParameter(default=True)
+    bool_explicit = luigi.BoolParameter(parsing=luigi.BoolParameter.EXPLICIT_PARSING)
 
     def run(self):
         Baz._val = self.bool
+        Baz._val_true = self.bool_true
+        Baz._val_explicit = self.bool_explicit
 
 
 class ListFoo(luigi.Task):
@@ -189,19 +199,29 @@ class ParameterTest(LuigiTestCase):
         self.assertEqual(f.p2, 5)
         self.assertEqual(f.not_a_param, "lol")
 
-    def test_bool_false(self):
+    def test_bool_parsing(self):
         self.run_locally(['Baz'])
-        self.assertEqual(Baz._val, False)
+        self.assertFalse(Baz._val)
+        self.assertTrue(Baz._val_true)
+        self.assertFalse(Baz._val_explicit)
 
-    def test_bool_true(self):
-        self.run_locally(['Baz', '--bool'])
-        self.assertEqual(Baz._val, True)
+        self.run_locally(['Baz', '--bool', '--bool-true'])
+        self.assertTrue(Baz._val)
+        self.assertTrue(Baz._val_true)
 
-    def test_bool_default_true(self):
+        self.run_locally(['Baz', '--bool-explicit', 'true'])
+        self.assertTrue(Baz._val_explicit)
+
+        self.run_locally(['Baz', '--bool-explicit', 'false'])
+        self.assertFalse(Baz._val_explicit)
+
+    def test_bool_default(self):
         self.assertTrue(WithDefaultTrue().x)
+        self.assertFalse(WithDefaultFalse().x)
 
     def test_bool_coerce(self):
-        self.assertEqual(True, WithDefaultTrue(x='yes').x)
+        self.assertTrue(WithDefaultTrue(x='true').x)
+        self.assertFalse(WithDefaultTrue(x='false').x)
 
     def test_bool_no_coerce_none(self):
         self.assertIsNone(WithDefaultTrue(x=None).x)
@@ -308,6 +328,58 @@ class ParameterTest(LuigiTestCase):
         param = luigi.IntParameter(batch_method=tuple)
         self.assertEqual((7, 17, 5), param._parse_list(['7', '17', '5']))
 
+    @mock.patch('luigi.parameter.warnings')
+    def test_warn_on_default_none(self, warnings):
+        class TestConfig(luigi.Config):
+            param = luigi.Parameter(default=None)
+
+        TestConfig()
+        warnings.warn.assert_called_once_with('Parameter "param" with value "None" is not of type string.')
+
+    @mock.patch('luigi.parameter.warnings')
+    def test_no_warn_on_string(self, warnings):
+        class TestConfig(luigi.Config):
+            param = luigi.Parameter(default=None)
+
+        TestConfig(param="str")
+        warnings.warn.assert_not_called()
+
+    @mock.patch('luigi.parameter.warnings')
+    def test_no_warn_on_none_in_optional(self, warnings):
+        class TestConfig(luigi.Config):
+            param = luigi.OptionalParameter(default=None)
+
+        TestConfig()
+        warnings.warn.assert_not_called()
+
+    @mock.patch('luigi.parameter.warnings')
+    def test_no_warn_on_string_in_optional(self, warnings):
+        class TestConfig(luigi.Config):
+            param = luigi.OptionalParameter(default=None)
+
+        TestConfig(param='value')
+        warnings.warn.assert_not_called()
+
+    @mock.patch('luigi.parameter.warnings')
+    def test_warn_on_bad_type_in_optional(self, warnings):
+        class TestConfig(luigi.Config):
+            param = luigi.OptionalParameter()
+
+        TestConfig(param=1)
+        warnings.warn.assert_called_once_with('OptionalParameter "param" with value "1" is not of type string or None.')
+
+    def test_optional_parameter_parse_none(self):
+        self.assertIsNone(luigi.OptionalParameter().parse(''))
+
+    def test_optional_parameter_parse_string(self):
+        self.assertEqual('test', luigi.OptionalParameter().parse('test'))
+
+    def test_optional_parameter_serialize_none(self):
+        self.assertEqual('', luigi.OptionalParameter().serialize(None))
+
+    def test_optional_parameter_serialize_string(self):
+        self.assertEqual('test', luigi.OptionalParameter().serialize('test'))
+
 
 class TestParametersHashability(LuigiTestCase):
     def test_date(self):
@@ -340,7 +412,9 @@ class TestParametersHashability(LuigiTestCase):
             args = luigi.parameter.BoolParameter()
 
         p = luigi.parameter.BoolParameter()
+
         self.assertEqual(hash(Foo(args=True).args), hash(p.parse('true')))
+        self.assertEqual(hash(Foo(args=False).args), hash(p.parse('false')))
 
     def test_int(self):
         class Foo(luigi.Task):
@@ -520,6 +594,11 @@ class TestRemoveGlobalParameters(LuigiTestCase):
         self.assertEqual(MyConfig().mc_q, 73)
         self.assertEqual(MyConfigWithoutSection().mc_r, 555)
         self.assertEqual(MyConfigWithoutSection().mc_s, 888)
+
+    @with_config({"MyConfig": {"mc_p": "555", "mc-p": "666", "mc-q": "777"}})
+    def test_configuration_style(self):
+        self.assertEqual(MyConfig().mc_p, 555)
+        self.assertEqual(MyConfig().mc_q, 777)
 
     def test_misc_1(self):
         class Dogs(luigi.Config):
@@ -873,11 +952,11 @@ class TestParamWithDefaultFromConfig(LuigiTestCase):
     def testListWithNamespaceCli(self):
         class A(luigi.Task):
             task_namespace = 'mynamespace'
-            l = luigi.ListParameter(default=[1, 2, 3])
+            l_param = luigi.ListParameter(default=[1, 2, 3])
             expected = luigi.ListParameter()
 
             def complete(self):
-                if self.l != self.expected:
+                if self.l_param != self.expected:
                     raise ValueError
                 return True
 
@@ -931,7 +1010,7 @@ class OverrideEnvStuff(LuigiTestCase):
     @with_config({"core": {"scheduler-port": '6544'}})
     def testOverrideSchedulerPort2(self):
         if six.PY3:
-            with self.assertWarnsRegex(DeprecationWarning, r'scheduler_port \(with dashes\) should be avoided'):
+            with self.assertWarnsRegex(DeprecationWarning, r'scheduler-port \(with dashes\) should be avoided'):
                 env_params = luigi.interface.core()
         else:
             env_params = luigi.interface.core()
@@ -1023,6 +1102,13 @@ class TestTaskParameter(LuigiTestCase):
 
         # OtherTask is serialized because it is used as an argument for DepTask.
         self.assertTrue(self.run_locally(['MainTask']))
+
+
+class TestSerializeTupleParameter(LuigiTestCase):
+    def testSerialize(self):
+        the_tuple = (1, 2, 3)
+
+        self.assertEqual(luigi.TupleParameter().parse(luigi.TupleParameter().serialize(the_tuple)), the_tuple)
 
 
 class NewStyleParameters822Test(LuigiTestCase):

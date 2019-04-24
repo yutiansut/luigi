@@ -21,6 +21,7 @@ This prevents multiple identical workflows to be launched simultaneously.
 """
 from __future__ import print_function
 
+import errno
 import hashlib
 import os
 import sys
@@ -37,7 +38,7 @@ def getpcmd(pid):
     """
     if os.name == "nt":
         # Use wmic command instead of ps on Windows.
-        cmd = 'wmic path win32_process where ProcessID=%s get Commandline' % (pid, )
+        cmd = 'wmic path win32_process where ProcessID=%s get Commandline 2> nul' % (pid, )
         with os.popen(cmd, 'r') as p:
             lines = [line for line in p.readlines() if line.strip("\r\n ") != ""]
             if lines:
@@ -102,10 +103,14 @@ def acquire_for(pid_dir, num_available=1, kill_signal=None):
 
     my_pid, my_cmd, pid_file = get_info(pid_dir)
 
-    # Check if there is a pid file corresponding to this name
-    if not os.path.exists(pid_dir):
+    # Create a pid file if it does not exist
+    try:
         os.mkdir(pid_dir)
         os.chmod(pid_dir, 0o777)
+    except OSError as exc:
+        if exc.errno != errno.EEXIST:
+            raise
+        pass
 
     # Let variable "pids" be all pids who exist in the .pid-file who are still
     # about running the same command.
@@ -137,7 +142,7 @@ def _read_pids_file(pid_file):
     # First setup a python 2 vs 3 compatibility
     # http://stackoverflow.com/a/21368622/621449
     try:
-        FileNotFoundError
+        FileNotFoundError  # noqa: F823
     except NameError:
         # Should only happen on python 2
         FileNotFoundError = IOError
